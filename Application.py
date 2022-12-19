@@ -1,13 +1,13 @@
 import csv
 import time
 import socket
-import qrcode
 import os.path
+import argparse
 from kivy.app import App
 from kivy.clock import Clock
 from kivy.uix.label import Label
-from kivy.uix.image import Image
 from kivy.uix.button import Button
+from kivy.core.window import Window
 from kivy.uix.textinput import TextInput
 from kivy.uix.boxlayout import BoxLayout
 from kivy.uix.gridlayout import GridLayout
@@ -15,12 +15,16 @@ from kivy.uix.screenmanager import ScreenManager, Screen
 
 
 MAX_TIME = 60
-PORT_SERVER = 2000
-QR_FILE = "QR-code.png"
+PORT_READER = 4000
+PORT_SERVER = 5000
 FILE = "Application.csv"
-HOST_SERVER = "192.168.1.120"
+HOST_READER = "127.0.0.1"
+HOST_SERVER = "127.0.0.1"
 LABEL = ["identificator", "surname", "name", "middle_name", "birth_day", "birth_month",
-         "birth_year", "country", "sex", "mobile_number", "host", "port"]
+         "birth_year", "work", "sex", "mobile_number", "host", "port"]
+
+
+Window.fullscreen = 'auto'
 
 
 def create_message():
@@ -59,8 +63,8 @@ class Application(App):
         work = Greeting()
         work.run()
         sm.add_widget(MainScreen())
-        sm.add_widget(QRScreen())
         sm.add_widget(DataScreen())
+        sm.add_widget(OutputScreen())
         sm.add_widget(InputIsReady())
         sm.add_widget(BadSocketWork())
         sm.add_widget(GoodSocketWork())
@@ -80,9 +84,10 @@ class MainScreen(Screen):
         main_layout = BoxLayout(orientation="vertical")
         self.add_widget(main_layout)
         buttons = ["Ввести данные",
+                   "Вывести данные",
                    "Связаться с сервером",
                    "Принять соединение с сервером (даётся " + str(self.max_time) + " секунд)",
-                   "Отобразить идентификатор",
+                   "Получить доступ",
                    "Выход"]
         chrono = Myclock()
         Clock.schedule_interval(chrono.update, 0.01)
@@ -94,11 +99,13 @@ class MainScreen(Screen):
             )
             if label == "Ввести данные":
                 button.bind(on_press=self.button_data_input)
+            if label == "Вывести данные":
+                button.bind(on_press=self.button_data_output)
             if label == "Связаться с сервером":
                 button.bind(on_press=self.button_socket)
             if label == "Принять соединение с сервером (даётся " + str(self.max_time) + " секунд)":
                 button.bind(on_press=self.button_connect)
-            if label == "Отобразить идентификатор":
+            if label == "Получить доступ":
                 button.bind(on_press=self.button_qrcode)
             if label == "Выход":
                 button.bind(on_press=self.button_exit)
@@ -109,6 +116,13 @@ class MainScreen(Screen):
             self.manager.current = 'Data_Input'
         else:
             self.manager.current = 'Message'
+        return
+
+    def button_data_output(self, *args):
+        if os.path.exists(FILE):
+            self.manager.current = 'Data_Output'
+        else:
+            self.manager.current = 'No_Data'
         return
 
     def button_socket(self, *args):
@@ -145,10 +159,6 @@ class MainScreen(Screen):
                         create = csv.writer(file)
                         for i in new_rows:
                             create.writerow(i)
-                    if os.path.exists(QR_FILE):
-                        os.remove(QR_FILE)
-                    image = qrcode.make(new_identificator)
-                    image.save(QR_FILE)
                     self.manager.current = 'Socket_Good_Info'
                 else:
                     self.manager.current = 'Socket_No_Info'
@@ -172,7 +182,6 @@ class MainScreen(Screen):
             sock = socket.socket()
             sock.settimeout(self.max_time)
             sock.bind((new_row[len(new_row) - 2], int(new_row[len(new_row) - 1])))
-            my_host, my_port = sock.getsockname()
             sock.listen(1)
             conn, address = sock.accept()
             data = conn.recv(1024)
@@ -184,17 +193,30 @@ class MainScreen(Screen):
         if len(data) > 0:
             action = data.pop(0)
             change_file(data)
-            image = qrcode.make(data[0])
-            image.save(QR_FILE)
             if action == "edit":
                 self.manager.current = 'Edit_Connection'
             if action == "delete":
                 self.manager.current = 'Delete_Connection'
         return
 
-    def button_qrcode(self, *args):
-        self.manager.current = 'QR-code'
-        return
+    @staticmethod
+    def button_qrcode(*args):
+        count = 0
+        identificator = ""
+        with open(FILE, 'r') as file:
+            results = csv.reader(file)
+            for row in results:
+                if count > 0:
+                    identificator = row[0]
+                count += 1
+        try:
+            sock = socket.socket()
+            sock.connect((HOST_READER, PORT_READER))
+            sock.send(identificator.encode())
+            sock.close()
+            return
+        except ConnectionRefusedError:
+            return
 
     def button_exit(self, *args):
         self.manager.current = 'Exit'
@@ -202,25 +224,47 @@ class MainScreen(Screen):
         return
 
 
-class QRScreen(Screen):
+class OutputScreen(Screen):
     def __init__(self):
         super().__init__()
-        self.name = 'QR-code'
-        qr_layout = BoxLayout(orientation="vertical")
-        self.add_widget(qr_layout)
-        if not os.path.exists(QR_FILE):
-            identificator = "XXX-XXX-XXX-XXX-XXX"
-            new_image = qrcode.make(identificator)
-            new_image.save(QR_FILE)
-        image = Image(source=QR_FILE)
-        qr_layout.add_widget(image)
-        button = Button(text='Назад',
+        self.name = 'Data_Output'
+        self.info = ["Имя: ", "Фамилия: ", "Отчество: ", "День Рождения: ", "Месяц Рождения: ", "Год Рождения: ",
+                     "Должность: ", "Пол: ", "Номер телефона: "]
+        self.labels = []
+        output_layout = GridLayout(cols=3, spacing=10, padding=10)
+        self.add_widget(output_layout)
+        for i in range(len(self.info)):
+            label = Label(text="   ",
+                          size_hint=(1, .25),
+                          pos_hint={"center_x": .5, "center_y": .5})
+            self.labels.append(label)
+            output_layout.add_widget(label)
+        button = Button(text='Вывести',
+                        size_hint=(.5, .5),
+                        pos_hint={'center_x': .5, 'center_y': .5})
+        button.bind(on_press=self.to_output)
+        output_layout.add_widget(button)
+        button = Button(text='В меню',
                         size_hint=(.5, .5),
                         pos_hint={'center_x': .5, 'center_y': .5})
         button.bind(on_press=self.to_menu)
-        qr_layout.add_widget(button)
+        output_layout.add_widget(button)
+
+    def to_output(self, *args):
+        count = 0
+        with open(FILE, 'r') as file:
+            results = csv.reader(file)
+            for row in results:
+                if count > 0:
+                    for j in range(len(row)):
+                        if (j < len(self.info) + 1) and (j > 0):
+                            self.labels[j - 1].text = self.info[j - 1] + str(row[j])
+                count += 1
+        return
 
     def to_menu(self, *args):
+        for i in range(len(self.labels)):
+            self.labels[i].text = self.info[i]
         self.manager.current = 'Menu'
         return
 
@@ -265,34 +309,23 @@ class DataScreen(Screen):
         text_1 = "Введите свою фамилию"
         text_2 = "Введите своё имя"
         text_3 = "Введите своё отчество"
-        text_4 = "Введите свой день рождения"
-        text_5 = "Введите свой месяц рождения"
-        text_6 = "Введите свой год рождения"
         text_7 = "Введите свою должность"
-        text_8 = "Введите свой пол (М/Ж)"
-        text_9 = "Введите свой номер телефона (X-XXX-XXX-XX-XX)"
-        if self.user_surname.text != text_1 or self.user_name.text != text_2 or self.user_middle_name.text != text_3 or \
-                self.birth_day.text != text_4 or self.birth_month.text != text_5 or self.birth_year.text != text_6 or \
-                self.work.text != text_7 or self.sex.text != text_8 or self.mobile_number.text != text_9:
+        if self.user_surname.text != text_1 and self.user_name.text != text_2 and self.user_middle_name.text != text_3\
+                and self.work.text != text_7:
             check_emptiness = True
-        if self.user_surname.text != "" or self.user_name.text != "" or self.user_middle_name.text != "" or \
-                self.birthday.text != "" or self.birthmonth.text != "" or self.birthyear.text != "" or \
-                self.work.text != "" or self.sex.text != "" or self.mobile_number.text != "":
+        if self.user_surname.text != "" and self.user_name.text != "" and self.user_middle_name.text != "" and \
+                self.work.text != "":
             check_fillness = True
-        if check_emptiness and check_fillness:
-            if self.birth_day.text.isdigit() and self.birth_month.text.isdigit() and self.birth_year.text.isdigit():
-                check_birth = True
-        if check_emptiness and check_fillness:
-            if self.sex.text == 'М' or self.sex.text == 'Ж':
-                check_sex = True
-        if check_emptiness and check_fillness:
-            for i in range(len(self.work.text)):
-                if self.work.text[i].isdigit():
-                    check_work = True
-        if check_emptiness and check_fillness:
-            if len(self.mobile_number.text) == 15:
-                check_mobile_number = True
-        if check_birth and check_sex and check_work and check_mobile_number:
+        if self.birth_day.text.isdigit() and self.birth_month.text.isdigit() and self.birth_year.text.isdigit():
+            check_birth = True
+        if self.sex.text == 'М' or self.sex.text == 'Ж':
+            check_sex = True
+        for i in range(len(self.work.text)):
+            if self.work.text[i].isdigit():
+                check_work = True
+        if len(self.mobile_number.text) == 15:
+            check_mobile_number = True
+        if check_birth and check_sex and check_work and check_mobile_number and check_emptiness and check_fillness:
             self.write_files()
             self.manager.current = 'Menu'
         return
@@ -319,7 +352,7 @@ class InputIsReady(Screen):
         button = Button(text='Вы уже выполнили ввод данных! Чтобы вернуться\n'
                              'в меню, нажмите на данную кнопку, пожалуйста.',
                         size_hint=(1, .1),
-                        pos_hint={"center_x": .4, "center_y": .5})
+                        pos_hint={"center_x": .5, "center_y": .5})
         button.bind(on_press=self.to_menu)
         no_input_layout.add_widget(button)
 
@@ -337,7 +370,7 @@ class BadSocketWork(Screen):
         button = Button(text='Соединение не было установлено! Нажмите на кнопку,\n'
                              'чтобы вернуться в меню, пожалуйста.',
                         size_hint=(1, .1),
-                        pos_hint={"center_x": .4, "center_y": .5})
+                        pos_hint={"center_x": .5, "center_y": .5})
         button.bind(on_press=self.to_menu)
         no_input_layout.add_widget(button)
 
@@ -355,7 +388,7 @@ class GoodSocketWork(Screen):
         button = Button(text='Соединение было успешно выполнено! Нажмите на\n'
                              'кнопку, чтобы вернуться в меню, пожалуйста.',
                         size_hint=(1, .1),
-                        pos_hint={"center_x": .4, "center_y": .5})
+                        pos_hint={"center_x": .5, "center_y": .5})
         button.bind(on_press=self.to_menu)
         no_input_layout.add_widget(button)
 
@@ -373,7 +406,7 @@ class NoSocketWork(Screen):
         button = Button(text='В соединении вам было отказано сервером! Нажмите на\n'
                              'кнопку, чтобы вернуться в меню, пожалуйста.',
                         size_hint=(1, .1),
-                        pos_hint={"center_x": .4, "center_y": .5})
+                        pos_hint={"center_x": .5, "center_y": .5})
         button.bind(on_press=self.to_menu)
         no_input_layout.add_widget(button)
 
@@ -391,7 +424,7 @@ class InputIsNotReady(Screen):
         button = Button(text='Вы не выполнили ввод данных! Вернитесь\n'
                              'в меню и выполните ввод, пожалуйста.',
                         size_hint=(1, .1),
-                        pos_hint={"center_x": .4, "center_y": .5})
+                        pos_hint={"center_x": .5, "center_y": .5})
         button.bind(on_press=self.to_menu)
         not_ready_layout.add_widget(button)
 
@@ -409,7 +442,7 @@ class EditSocket(Screen):
         button = Button(text='Ваша информация была успешно изменена! Нажмите на\n'
                              'кнопку, чтобы вернуться в меню, пожалуйста.',
                         size_hint=(1, .1),
-                        pos_hint={"center_x": .4, "center_y": .5})
+                        pos_hint={"center_x": .5, "center_y": .5})
         button.bind(on_press=self.to_menu)
         no_input_layout.add_widget(button)
 
@@ -427,7 +460,7 @@ class DeleteSocket(Screen):
         button = Button(text='Ваше удаление было завершено! Нажмите на\n'
                              'кнопку, чтобы вернуться в меню, пожалуйста.',
                         size_hint=(1, .1),
-                        pos_hint={"center_x": .4, "center_y": .5})
+                        pos_hint={"center_x": .5, "center_y": .5})
         button.bind(on_press=self.to_menu)
         no_input_layout.add_widget(button)
 
@@ -465,4 +498,7 @@ class Myclock(Label):
 if __name__ == '__main__':
     sm = ScreenManager()
     app = Application()
-    app.run()
+    try:
+        app.run()
+    except argparse.ArgumentError:
+        app.stop()
